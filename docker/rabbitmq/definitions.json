@@ -1,0 +1,135 @@
+{
+  "vhosts": [{"name": "/"}],
+  "users": [
+    {
+      "name": "async_processing",
+      "password_hash": "l/xqOiukgTukk+p5vFasmONN0Zhyl155MAfOviikyB0cuQgS",
+      "hashing_algorithm": "rabbit_password_hashing_sha256",
+      "tags": "administrator"
+    }
+  ],
+  "permissions": [
+    {"user": "async_processing", "vhost": "/", "configure": ".*", "write": ".*", "read": ".*"}
+  ],
+  "exchanges": [
+    {
+      "name": "transactions",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "transactions.retry",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "transactions.work",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum"}
+    },
+    {
+      "name": "transactions.failure",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum"}
+    },
+    {
+      "name": "transactions.retry.1s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 1000}
+    },
+    {
+      "name": "transactions.retry.2s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 2000}
+    },
+    {
+      "name": "transactions.retry.4s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 4000}
+    },
+    {
+      "name": "transactions.retry.8s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 8000}
+    },
+    {
+      "name": "transactions.retry.16s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 16000}
+    },
+    {
+      "name": "transactions.retry.32s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 32000}
+    },
+    {
+      "name": "transactions.retry.60s",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {"x-queue-type": "quorum", "x-message-ttl": 60000}
+    }
+  ],
+  "bindings": [
+    {"source": "transactions", "vhost": "/", "destination": "transactions.work", "destination_type": "queue", "routing_key": "work", "arguments": {}},
+    {"source": "transactions", "vhost": "/", "destination": "transactions.failure", "destination_type": "queue", "routing_key": "failure", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.1s", "destination_type": "queue", "routing_key": "retry.1s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.2s", "destination_type": "queue", "routing_key": "retry.2s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.4s", "destination_type": "queue", "routing_key": "retry.4s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.8s", "destination_type": "queue", "routing_key": "retry.8s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.16s", "destination_type": "queue", "routing_key": "retry.16s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.32s", "destination_type": "queue", "routing_key": "retry.32s", "arguments": {}},
+    {"source": "transactions.retry", "vhost": "/", "destination": "transactions.retry.60s", "destination_type": "queue", "routing_key": "retry.60s", "arguments": {}}
+  ],
+  "policies": [
+    {
+      "vhost": "/",
+      "name": "transactions-core-safety",
+      "pattern": "^transactions\\.(work|failure)$",
+      "apply-to": "quorum_queues",
+      "definition": {"overflow": "reject-publish", "max-length": 100000, "delivery-limit": -1},
+      "priority": 0
+    },
+    {
+      "vhost": "/",
+      "name": "transactions-retry-safety",
+      "pattern": "^transactions\\.retry\\.(1s|2s|4s|8s|16s|32s|60s)$",
+      "apply-to": "quorum_queues",
+      "definition": {
+        "overflow": "reject-publish",
+        "max-length": 100000,
+        "delivery-limit": -1,
+        "dead-letter-strategy": "at-least-once",
+        "dead-letter-exchange": "transactions",
+        "dead-letter-routing-key": "work"
+      },
+      "priority": 0
+    }
+  ]
+}
