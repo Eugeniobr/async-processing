@@ -122,3 +122,27 @@ class RetryEnvelope:
 
         _require_nonempty(failure_kind, "failure_kind")
         return replace(self, attempt=self.attempt + 1, last_failure_kind=failure_kind)
+
+
+@dataclass(frozen=True)
+class PersistedTransaction:
+    """The immutable conversion facts committed as one database record."""
+
+    event: TransactionEvent
+    rate_provider: str
+    rate_requested_date: date
+    rate_date: date
+    applied_rate: Decimal
+    converted_usd_amount: Decimal
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.rate_provider, "rate_provider")
+        if self.rate_date > self.rate_requested_date:
+            raise ValueError("rate_date must not be later than rate_requested_date")
+        if not isinstance(self.applied_rate, Decimal) or not self.applied_rate.is_finite():
+            raise ValueError("applied_rate must be finite")
+        if self.applied_rate <= 0 or self.applied_rate.as_tuple().exponent < -12:
+            raise ValueError("applied_rate must fit numeric(24,12)")
+        validate_amount(self.converted_usd_amount)
+        object.__setattr__(self, "created_at", _normalize_utc(self.created_at, "created_at"))

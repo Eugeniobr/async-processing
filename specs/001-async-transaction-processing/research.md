@@ -75,3 +75,11 @@ All choices below are resolved for planning. “Confirmed” means the constitut
 
 - A custom HTTP parser/metrics format: rejected as unnecessary complexity.
 - In-memory broker or database tests only: rejected because the constitution requires recovery and outage claims to be verified against actual infrastructure.
+
+## Live Transaction Journey
+
+**Decision (new proposal, user-requested)**: Use OpenTelemetry spans exported to a local Jaeger UI to show a single transaction's journey in development. API acceptance, confirmed broker publication, consumer delivery, rate lookup, conversion, repository result, retry forwarding, and terminal failure/success each create or enrich a span correlated by `transaction_id`. Span attributes include stage, attempt, and outcome; they exclude monetary amounts, full message payloads, credentials, and connection URLs.
+
+**Rationale**: Jaeger accepts the OpenTelemetry Protocol and renders correlated spans as a trace timeline and graph, providing the requested live “factory” view without building a separate dashboard. [Jaeger features](https://www.jaegertracing.io/docs/2.22/features/) and [Jaeger UI configuration](https://www.jaegertracing.io/docs/2.22/deployment/frontend-ui/).
+
+**Boundary**: Export failures are ignored after recording local diagnostics; they never turn a confirmed publish into a failure, trigger an acknowledgement, or prove end-to-end recovery. RabbitMQ's optional firehose tracing is retained as a development debugging alternative only because it adds broker work and its state is not persistent across restart. [RabbitMQ firehose tracing](https://www.rabbitmq.com/docs/4.2/firehose).

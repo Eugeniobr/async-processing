@@ -14,6 +14,8 @@ Accept valid transactions only after RabbitMQ confirms durable publication; proc
 
 **Primary Dependencies**: FastAPI for HTTP validation and documentation, Pydantic for request validation, aio-pika for AMQP, SQLAlchemy with psycopg for PostgreSQL, HTTPX for rate retrieval, Prometheus client for metrics (new proposals; all behind small application interfaces where appropriate)
 
+**Live Trace Proposal**: OpenTelemetry instrumentation with a locally pinned Jaeger UI will correlate API acceptance, broker publication/consumption, rate retrieval, persistence, retry forwarding, and terminal outcomes by `transaction_id`. It is an operator/development aid and does not change delivery semantics.
+
 **Storage**: PostgreSQL (confirmed); RabbitMQ durable quorum queues retain work, retry, and permanent-failure messages (confirmed broker; queue type is a new proposal)
 
 **Testing**: pytest unit tests; Docker Compose-backed integration and recovery tests; k6 load measurement (new proposals)
@@ -63,6 +65,7 @@ Accept valid transactions only after RabbitMQ confirms durable publication; proc
 - Support USD plus codes in committed `config/currencies-v1.json`, a reviewed snapshot of Frankfurter's ECB coverage. The snapshot records provider, source URL, retrieval date, and codes; its version travels in the durable envelope and persisted transaction. Deployment rejects a malformed or duplicate-code snapshot. A candidate update is validated against the provider for a known business date in staging, reviewed, and version-bumped before deployment. An input outside the accepted snapshot is rejected at ingestion; a provider coverage change after acceptance produces a durable `provider_coverage_changed` failure record, never silent loss.
 - Store input and USD amounts as `NUMERIC(24,8)`, rates as `NUMERIC(24,12)`, and round the rate and converted amount to their stored scales with `ROUND_HALF_EVEN`. Reject a validly shaped input that cannot fit the amount range instead of truncating it.
 - Use one service process for HTTP ingestion/query and one consumer process; both compose the same application classes.
+- **New proposal requested after initial planning**: add OpenTelemetry spans and a local Jaeger UI for a live per-transaction journey. Spans carry `transaction_id`, stage, attempt, and outcome but never an amount, full message body, or database URL. A trace records observations only; it cannot establish durable acceptance or recovery guarantees.
 
 ## Simple Processing Workflow
 
@@ -119,6 +122,7 @@ The normative external contract is [contracts/openapi.yaml](contracts/openapi.ya
 - `GET /users/{user_id}/summary` returns the USD total and processed count, including zero values for no records.
 - `GET /users/{user_id}/transactions` accepts UTC `from` (inclusive), `to` (exclusive), `limit` (default 50, maximum 100), and nonnegative `offset`; results use ascending `(timestamp, transaction_id)` order.
 - `GET /metrics` exposes Prometheus text. Required metric: `transaction_processing_failures_total`, labelled by `kind` (`retryable` or `permanent`). It may also expose retry and successful-processing counters.
+- The local Jaeger UI is a development/operator view, not a product endpoint. It presents a trace timeline for a transaction ID across API, broker, provider, repository, and retry stages. Trace-export failure must not reject or acknowledge a transaction differently.
 
 ## Verification Strategy
 

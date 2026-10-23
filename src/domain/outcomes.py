@@ -27,6 +27,22 @@ class Duplicate:
 
 
 @dataclass(frozen=True)
+class Inserted:
+    transaction_id: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.transaction_id, "transaction_id")
+
+
+@dataclass(frozen=True)
+class AlreadyExists:
+    transaction_id: str
+
+    def __post_init__(self) -> None:
+        _require_nonempty(self.transaction_id, "transaction_id")
+
+
+@dataclass(frozen=True)
 class RetryableFailure:
     reason: str
 

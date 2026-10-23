@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     currency_allowlist_path: Path = Path("config/currencies-v1.json")
     consumer_prefetch: int = Field(default=100, ge=1)
     rate_fallback_days: int = Field(default=7, ge=0, le=7)
+    otlp_traces_endpoint: str | None = None
 
     @field_validator("app_env")
     @classmethod
