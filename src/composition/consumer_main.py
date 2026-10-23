@@ -54,6 +54,8 @@ async def run_with_processor(
     connection = await aio_pika.connect(settings.rabbitmq_url)
     try:
         channel = await connection.channel(publisher_confirms=True, on_return_raises=True)
+        channel_closed = asyncio.Event()
+        channel.close_callbacks.add(lambda *_: channel_closed.set())
         await channel.set_qos(prefetch_count=settings.consumer_prefetch)
         publisher = TransactionPublisher(
             await channel.get_exchange("transactions"),
@@ -67,14 +69,16 @@ async def run_with_processor(
             metrics=metrics,
             after_processing=after_processing,
             after_retry_publish=after_retry_publish,
+            recover_unconfirmed=channel.close,
             tracer=tracer,
         )
         queue = await channel.get_queue("transactions.work")
         tag = await queue.consume(consumer.handle, no_ack=False)
         try:
-            await asyncio.Future()
+            await channel_closed.wait()
         finally:
-            await queue.cancel(tag)
+            if not channel.is_closed:
+                await queue.cancel(tag)
     finally:
         await connection.close()
 

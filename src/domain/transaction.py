@@ -104,7 +104,11 @@ class RetryEnvelope:
     last_failure_kind: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.schema_version, int) or self.schema_version < 1:
+        if (
+            not isinstance(self.schema_version, int)
+            or isinstance(self.schema_version, bool)
+            or self.schema_version < 1
+        ):
             raise ValueError("schema_version must be a positive integer")
         if not isinstance(self.event, TransactionEvent):
             raise ValueError("event must be a TransactionEvent")

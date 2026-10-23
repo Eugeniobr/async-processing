@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from decimal import Decimal
 
 import pytest
 
 from domain.outcomes import Duplicate, PermanentFailure, Processed, RetryableFailure
-from infrastructure.rabbitmq_consumer import TransactionConsumer
+from infrastructure.rabbitmq_consumer import TransactionConsumer, decode_envelope
 from infrastructure.rabbitmq_publisher import PublicationIndeterminate
 
 
@@ -36,7 +37,7 @@ class Processor:
 
     def process(self, event: object) -> object:
         self.calls.append("process")
-        if isinstance(self.outcome, Exception):
+        if isinstance(self.outcome, BaseException):
             raise self.outcome
         return self.outcome
 
@@ -74,6 +75,11 @@ class Metrics:
 
     def record_processing_failure(self, kind: str) -> None:
         self.calls.append(f"metric:{kind}")
+
+
+class FailingMetrics:
+    def record_processing_failure(self, _kind: str) -> None:
+        raise ConnectionError("metrics sink unavailable")
 
 
 def body() -> bytes:
@@ -158,10 +164,15 @@ def test_failure_metric_is_recorded_after_confirmed_forwarding_and_before_acknow
 
 def test_uncertain_forwarding_or_cancellation_leaves_delivery_unacknowledged() -> None:
     calls: list[str] = []
+
+    async def recover() -> None:
+        calls.append("recover")
+
     retry_delivery = Delivery(body())
     retry_consumer = TransactionConsumer(
         Processor(RetryableFailure("database offline"), calls),
         Publisher(calls, PublicationIndeterminate("connection lost")),
+        recover_unconfirmed=recover,
     )
     cancelled_delivery = Delivery(body())
     cancelled_consumer = TransactionConsumer(
@@ -174,6 +185,7 @@ def test_uncertain_forwarding_or_cancellation_leaves_delivery_unacknowledged() -
     except asyncio.CancelledError:
         pass
 
+    assert calls == ["process", "retry", "recover", "process"]
     assert retry_delivery.ack_count == 0
     assert cancelled_delivery.ack_count == 0
 
@@ -215,12 +227,96 @@ def test_invalid_envelope_remains_unacknowledged_when_failure_forwarding_is_unce
     delivery = Delivery(b"not json")
     publisher = Publisher(calls, PublicationIndeterminate("connection lost"))
 
+    async def recover() -> None:
+        calls.append("recover")
+
     asyncio.run(
-        TransactionConsumer(Processor(Processed("unused"), calls), publisher).handle(delivery)
+        TransactionConsumer(
+            Processor(Processed("unused"), calls), publisher, recover_unconfirmed=recover
+        ).handle(delivery)
     )
 
-    assert calls == ["invalid"]
+    assert calls == ["invalid", "recover"]
     assert delivery.ack_count == 0
+
+
+def test_processing_or_ack_failure_closes_the_consumer_recovery_boundary() -> None:
+    for processor_outcome, ack_fails in (
+        (RuntimeError("processor bug"), False),
+        (Processed("tx-consumer-1"), True),
+    ):
+        calls: list[str] = []
+
+        class FailingAckDelivery(Delivery):
+            async def ack(self) -> None:
+                await super().ack()
+                if ack_fails:
+                    raise ConnectionError("ack connection lost")
+
+        async def recover() -> None:
+            calls.append("recover")
+
+        delivery = FailingAckDelivery(body())
+        consumer = TransactionConsumer(
+            Processor(processor_outcome, calls), Publisher(calls), recover_unconfirmed=recover
+        )
+
+        asyncio.run(consumer.handle(delivery))
+
+        assert calls[-1] == "recover"
+
+
+def test_metrics_failure_leaves_confirmed_forwarding_recoverable() -> None:
+    calls: list[str] = []
+
+    async def recover() -> None:
+        calls.append("recover")
+
+    delivery = Delivery(body())
+    consumer = TransactionConsumer(
+        Processor(RetryableFailure("database offline"), calls),
+        Publisher(calls),
+        metrics=FailingMetrics(),
+        recover_unconfirmed=recover,
+    )
+
+    asyncio.run(consumer.handle(delivery))
+
+    assert calls == ["process", "retry", "recover"]
+    assert delivery.ack_count == 0
+
+
+@pytest.mark.parametrize(
+    "raw_body",
+    [
+        b"not json",
+        b'{"schema_version": 1, "event": []}',
+        b'{"schema_version": true, "event": {}}',
+        b'{"schema_version": 1, "event": {"original_amount": 1e9999999999999999999999999999}}',
+        b'{"schema_version": 1, "event": {"original_amount": {"unexpected": "object"}}}',
+        (
+            b'{"schema_version": 1, "event": {"original_amount": "1.00", '
+            b'"event_timestamp": "999999999999-01-01T00:00:00+00:00"}}'
+        ),
+    ],
+)
+def test_decode_envelope_classifies_extreme_or_unexpected_input_as_invalid(raw_body: bytes) -> None:
+    with pytest.raises(ValueError, match="invalid transaction retry envelope"):
+        decode_envelope(raw_body)
+
+
+def test_decode_envelope_preserves_decimal_without_float_coercion() -> None:
+    # Construct the JSON fixture from a literal rather than a Python float so the
+    # assertion detects accidental json-decoder float coercion.
+    encoded = body().replace(b'"3.00000000"', b"12345678.12345678")
+    assert decode_envelope(encoded).event.original_amount == Decimal("12345678.12345678")
+
+
+def test_decode_envelope_rejects_boolean_schema_version() -> None:
+    encoded = body().replace(b'"schema_version": 1', b'"schema_version": true')
+
+    with pytest.raises(ValueError, match="invalid transaction retry envelope"):
+        decode_envelope(encoded)
 
 
 @pytest.mark.parametrize(

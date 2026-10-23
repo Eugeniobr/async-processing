@@ -72,10 +72,12 @@ Accept valid transactions only after RabbitMQ confirms durable publication; proc
 1. The ingestion endpoint validates the transaction, normalizes its timestamp to UTC, and asks `TransactionPublisher` to publish a persistent envelope to the durable work queue.
 2. The publisher treats publication as accepted only after a positive publisher confirm and no mandatory-routing return. A negative or missing confirm returns temporary unavailability; a producer may retry, creating a harmless duplicate.
 3. `TransactionConsumer` receives with manual acknowledgement and bounded prefetch, then calls `TransactionProcessor`.
-4. The processor obtains a USD rate (or uses 1 for USD), applies the documented Decimal rules, and calls `TransactionRepository.record_first`.
+4. The processor may first observe an already committed transaction ID and return `Duplicate`
+   without an unnecessary rate lookup. On a miss it obtains a USD rate (or uses 1 for USD),
+   applies the documented Decimal rules, and calls `TransactionRepository.record_first`.
 5. The repository performs one atomic insert under the transaction-ID unique constraint. Inserted means success; conflict means an already-persisted transaction and preserves the first record. In either case the consumer acknowledges after the database result commits.
 6. On a temporary provider or database failure, the consumer publishes the unchanged envelope plus incremented attempt metadata to the selected fixed-delay retry bucket, waits for that publish confirm, then acknowledges the original delivery. The bucket expires it back to work after its fixed delay.
-7. On a permanent validation/rate failure, the consumer confirms durable forwarding to the failure queue before acknowledging the original. Operators inspect or replay that durable record.
+7. On a permanent validation/rate failure, the consumer confirms durable forwarding to the failure queue before acknowledging the original. Operators inspect or replay that durable record. If processing, acknowledgement, or forwarding is uncertain, it closes the consumer channel without acknowledging; RabbitMQ requeues the unacknowledged delivery and the bounded consumer stops rather than hot-requeueing it.
 
 ## Classes, Responsibilities, and Interfaces
 
@@ -109,7 +111,7 @@ No generic base classes, service locator, event bus, or repository-per-entity ab
 
 ### PostgreSQL and concurrency
 
-- `transactions.transaction_id` is a unique constraint. `record_first` issues a single `INSERT ... ON CONFLICT DO NOTHING RETURNING` statement inside the database transaction—never a prior lookup followed by an insert.
+- `transactions.transaction_id` is a unique constraint. `record_first` issues a single `INSERT ... ON CONFLICT DO NOTHING RETURNING` statement inside the database transaction. A prior committed-ID read may skip an external rate lookup, but no read result authorizes an insert; every miss still uses this atomic statement.
 - The inserted transaction contains all conversion facts. A conflict returns `AlreadyExists`; conflicting duplicate payloads are neither compared for replacement nor updated. This implements first-write-wins under concurrent consumers.
 - The consumer acknowledges only after the transaction commits. A crash before acknowledgement causes redelivery, which resolves as `AlreadyExists` and is then acknowledged.
 - A crash after confirmed retry publication but before acknowledgement can create a duplicate retry delivery, never a loss: the original is redelivered and may be forwarded again. Both envelopes retain the same transaction ID and resolve through the unique insert; recovery testing proves this boundary.

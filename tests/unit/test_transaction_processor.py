@@ -31,10 +31,23 @@ class FakeRateProvider:
 
 
 class FakeRepository:
-    def __init__(self, result: Inserted | AlreadyExists | Exception, calls: list[str]) -> None:
+    def __init__(
+        self,
+        result: Inserted | AlreadyExists | Exception,
+        calls: list[str],
+        *,
+        exists: bool | Exception = False,
+    ) -> None:
         self._result = result
         self._calls = calls
+        self._exists = exists
         self.recorded: list[PersistedTransaction] = []
+
+    def has_transaction_id(self, transaction_id: str) -> bool:
+        self._calls.append(f"exists:{transaction_id}")
+        if isinstance(self._exists, Exception):
+            raise self._exists
+        return self._exists
 
     def record_first(self, transaction: PersistedTransaction) -> Inserted | AlreadyExists:
         self._calls.append("repository")
@@ -96,7 +109,7 @@ def test_processes_and_persists_conversion_after_rate_lookup() -> None:
     outcome = subject.process(event())
 
     assert outcome == Processed("tx-processor-1")
-    assert calls == ["provider:EUR:2026-10-20", "repository"]
+    assert calls == ["exists:tx-processor-1", "provider:EUR:2026-10-20", "repository"]
     assert repository.recorded == [
         PersistedTransaction(
             event=event(),
@@ -110,7 +123,7 @@ def test_processes_and_persists_conversion_after_rate_lookup() -> None:
     ]
 
 
-def test_reports_duplicate_after_repository_confirms_first_record_exists() -> None:
+def test_concurrent_insert_after_a_stale_precheck_still_resolves_as_duplicate() -> None:
     calls: list[str] = []
     subject, repository = processor(quote(), AlreadyExists("tx-processor-1"), calls)
 
@@ -119,6 +132,30 @@ def test_reports_duplicate_after_repository_confirms_first_record_exists() -> No
     assert outcome == Duplicate("tx-processor-1")
     assert len(repository.recorded) == 1
     assert calls[-1] == "repository"
+
+
+def test_skips_rate_lookup_for_an_already_persisted_transaction() -> None:
+    calls: list[str] = []
+    repository = FakeRepository(Inserted("unreachable"), calls, exists=True)
+    subject = TransactionProcessor(
+        FakeRateProvider(RetryableRateError("offline"), calls), MoneyConverter(), repository
+    )
+
+    assert subject.process(event()) == Duplicate("tx-processor-1")
+    assert calls == ["exists:tx-processor-1"]
+    assert repository.recorded == []
+
+
+def test_existing_transaction_check_failure_is_retryable_without_rate_lookup() -> None:
+    calls: list[str] = []
+    repository = FakeRepository(
+        Inserted("unreachable"), calls, exists=ConnectionError("database offline")
+    )
+    subject = TransactionProcessor(FakeRateProvider(quote(), calls), MoneyConverter(), repository)
+
+    assert subject.process(event()) == RetryableFailure("persistence unavailable")
+    assert calls == ["exists:tx-processor-1"]
+    assert repository.recorded == []
 
 
 def test_uses_usd_identity_quote_and_persists_original_amount() -> None:

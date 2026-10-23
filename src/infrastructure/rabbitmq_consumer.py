@@ -6,7 +6,7 @@ import asyncio
 import json
 from collections.abc import Awaitable, Callable
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Protocol
 
 from application.transaction_processor import ProcessingOutcome
@@ -22,6 +22,9 @@ class Delivery(Protocol):
     headers: object
 
     def ack(self) -> Awaitable[None]: ...
+
+
+DeliveryRecovery = Callable[[], Awaitable[None]]
 
 
 class Processor(Protocol):
@@ -53,6 +56,7 @@ class TransactionConsumer:
         metrics: ProcessingFailureMetrics | None = None,
         after_processing: Callable[[], Awaitable[None]] | None = None,
         after_retry_publish: Callable[[], Awaitable[None]] | None = None,
+        recover_unconfirmed: DeliveryRecovery | None = None,
         tracer: TransactionTracer | None = None,
     ) -> None:
         self._processor = processor
@@ -60,6 +64,7 @@ class TransactionConsumer:
         self._metrics = metrics
         self._after_processing = after_processing
         self._after_retry_publish = after_retry_publish
+        self._recover_unconfirmed = recover_unconfirmed
         self._tracer = tracer or NoopTransactionTracer()
 
     async def handle(self, delivery: Delivery) -> None:
@@ -75,9 +80,15 @@ class TransactionConsumer:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                await self._recover(delivery)
                 return
-            self._record_failure("permanent")
-            await delivery.ack()
+            try:
+                self._record_failure("permanent")
+                await self._ack_completed(delivery)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await self._recover(delivery)
             return
 
         parent_context = self._tracer.extract(getattr(delivery, "headers", None))
@@ -100,29 +111,43 @@ class TransactionConsumer:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                await self._recover(delivery)
                 return
             if isinstance(outcome, (Processed, Duplicate)):
-                if self._after_processing:
-                    await self._after_processing()
-                await delivery.ack()
+                try:
+                    if self._after_processing:
+                        await self._after_processing()
+                    await delivery.ack()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await self._recover(delivery)
+                    return
                 delivery_span.set_outcome(
                     "processed" if isinstance(outcome, Processed) else "duplicate"
                 )
                 return
             if isinstance(outcome, RetryableFailure):
-                retry_envelope = envelope.for_confirmed_retry(outcome.reason)
                 try:
+                    retry_envelope = envelope.for_confirmed_retry(outcome.reason)
                     await self._publisher.publish_retry(
                         retry_envelope, self._retry_delay(retry_envelope.attempt)
                     )
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    await self._recover(delivery)
                     return
-                self._record_failure("retryable")
-                if self._after_retry_publish:
-                    await self._after_retry_publish()
-                await delivery.ack()
+                try:
+                    self._record_failure("retryable")
+                    if self._after_retry_publish:
+                        await self._after_retry_publish()
+                    await delivery.ack()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await self._recover(delivery)
+                    return
                 delivery_span.set_outcome("retry_forwarded")
                 return
             if isinstance(outcome, PermanentFailure):
@@ -131,10 +156,52 @@ class TransactionConsumer:
                 except asyncio.CancelledError:
                     raise
                 except Exception:
+                    await self._recover(delivery)
                     return
-                self._record_failure("permanent")
-                await delivery.ack()
+                try:
+                    self._record_failure("permanent")
+                    await delivery.ack()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    await self._recover(delivery)
+                    return
                 delivery_span.set_outcome("failure_forwarded")
+                return
+
+            await self._recover(delivery)
+
+    async def _ack_completed(self, delivery: Delivery) -> None:
+        """ACK only a completed result; recover when the broker cannot accept it."""
+
+        try:
+            await delivery.ack()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            await self._recover(delivery)
+
+    async def _recover(self, delivery: Delivery) -> None:
+        """Close the delivery channel so RabbitMQ redelivers instead of pinning it.
+
+        No negative acknowledgement is sent here: immediate requeue would create a hot loop
+        when a dependency or publication path is still unavailable. Closing the channel is a
+        controlled consumer stop; RabbitMQ requeues its unacknowledged deliveries and the
+        process supervisor may restart this bounded-prefetch consumer.
+        """
+
+        if self._recover_unconfirmed is not None:
+            await self._recover_unconfirmed()
+            return
+
+        channel = getattr(delivery, "channel", None)
+        close = getattr(channel, "close", None)
+        if not callable(close):
+            # Narrow fakes used by contract tests have no broker channel. They still
+            # observe the essential invariant (no ACK); production composition always
+            # supplies ``recover_unconfirmed=channel.close`` explicitly.
+            return
+        await close()
 
     def _record_failure(self, kind: str) -> None:
         """Observe only a confirmed durable forwarding, immediately before the ACK."""
@@ -171,5 +238,12 @@ def decode_envelope(body: bytes) -> RetryEnvelope:
             currency_allowlist_version=payload["currency_allowlist_version"],
             last_failure_kind=payload.get("last_failure_kind"),
         )
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        OverflowError,
+        InvalidOperation,
+        json.JSONDecodeError,
+    ) as error:
         raise ValueError("invalid transaction retry envelope") from error

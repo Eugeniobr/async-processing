@@ -105,6 +105,14 @@ def test_sequential_and_conflicting_duplicates_preserve_the_first_record(engine:
     assert row["original_amount"] == Decimal("12.34567890")
 
 
+def test_has_transaction_id_only_observes_committed_records(engine: Engine) -> None:
+    repository = PostgresTransactionRepository(engine)
+
+    assert repository.has_transaction_id("transaction-1") is False
+    assert repository.record_first(persisted_transaction()) == Inserted("transaction-1")
+    assert repository.has_transaction_id("transaction-1") is True
+
+
 def test_concurrent_duplicate_inserts_use_the_database_unique_constraint(engine: Engine) -> None:
     repository = PostgresTransactionRepository(engine)
     record = persisted_transaction()

@@ -23,9 +23,18 @@ All choices below are resolved for planning. “Confirmed” means the constitut
 
 **Rationale**: A separate “does it exist?” read races with concurrent consumers. PostgreSQL documents that unique-index conflicts coordinate concurrent inserts and that `ON CONFLICT` provides the alternative to a uniqueness error. This implements the required first-write-wins rule. [PostgreSQL INSERT](https://www.postgresql.org/docs/current/sql-insert.html) and [unique-index checks](https://www.postgresql.org/docs/current/index-unique-checks.html).
 
+**Corrective implementation note**: A committed-ID read may be used only as a best-effort
+optimization before an external rate lookup. It can return `Duplicate` immediately for an
+already-persisted delivery, including while the provider is unavailable. It never authorizes
+an insert: a missing read result still performs the normal conversion followed by
+`record_first`, and the unique `ON CONFLICT DO NOTHING` statement remains the sole
+concurrency boundary. A read failure is retryable.
+
 **Alternatives considered**:
 
-- Application-side lookup then insert: rejected because it is not atomic.
+- Application-side lookup then insert as the deduplication decision: rejected because it is
+  not atomic. A lookup used solely to skip unnecessary work remains safe only when every miss
+  still reaches the atomic insert.
 - Updating a conflict: rejected because the constitution requires the first persisted record to win.
 - A separately maintained summary counter: rejected because it can diverge from transaction records; summaries are derived from persisted transactions.
 

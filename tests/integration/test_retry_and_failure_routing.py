@@ -48,6 +48,9 @@ class FailOnceRepository:
         self._repository = repository
         self._failed = False
 
+    def has_transaction_id(self, transaction_id: str) -> bool:
+        return self._repository.has_transaction_id(transaction_id)
+
     def record_first(self, transaction: object) -> object:
         if not self._failed:
             self._failed = True

@@ -46,6 +46,12 @@ class TransactionProcessor:
         """Return a classified outcome; delivery acknowledgement remains the caller's job."""
 
         try:
+            if self._repository.has_transaction_id(event.transaction_id):
+                return Duplicate(event.transaction_id)
+        except Exception:
+            return RetryableFailure("persistence unavailable")
+
+        try:
             quote = self._rate_provider.get_usd_rate(event.currency, event.rate_requested_date)
         except RetryableRateError:
             return RetryableFailure("rate provider unavailable")

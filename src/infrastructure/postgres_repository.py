@@ -21,6 +21,24 @@ class PostgresTransactionRepository:
         self._engine = engine
         self._tracer = tracer or NoopTransactionTracer()
 
+    def has_transaction_id(self, transaction_id: str) -> bool:
+        """Return whether an already committed record exists for this ID.
+
+        This is only an optimization before a rate lookup. ``record_first`` remains the
+        database-enforced concurrency boundary, so a concurrent insert after this read
+        cannot overwrite or duplicate the authoritative record.
+        """
+
+        if not isinstance(transaction_id, str) or not transaction_id.strip():
+            raise ValueError("transaction_id must be nonempty")
+        statement = (
+            select(transactions_table.c.transaction_id)
+            .where(transactions_table.c.transaction_id == transaction_id)
+            .limit(1)
+        )
+        with self._engine.connect() as connection:
+            return connection.execute(statement).scalar_one_or_none() is not None
+
     def record_first(self, transaction: PersistedTransaction) -> Inserted | AlreadyExists:
         """Commit an insert or report an existing id without a preceding read."""
 

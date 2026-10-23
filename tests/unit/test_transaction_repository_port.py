@@ -10,6 +10,9 @@ from domain.transaction import PersistedTransaction
 
 
 class FakeRepository:
+    def has_transaction_id(self, transaction_id: str) -> bool:
+        return False
+
     def record_first(self, transaction: PersistedTransaction) -> Inserted:
         return Inserted(transaction.event.transaction_id)
 
