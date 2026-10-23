@@ -1,0 +1,154 @@
+openapi: 3.1.0
+info:
+  title: Async Transaction Processing API
+  version: 0.1.0
+  description: |
+    Contract for accepted asynchronous transaction processing and queries of
+    completed transactions. Monetary values are decimal strings.
+paths:
+  /transactions:
+    post:
+      summary: Accept a transaction for asynchronous processing
+      operationId: submitTransaction
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransactionInput'
+      responses:
+        '202':
+          description: Durably accepted for later processing; conversion may not be complete.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [id, status]
+                properties:
+                  id: { type: string }
+                  status: { type: string, const: accepted }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503':
+          description: Durable acceptance could not be confirmed. The client may resend the same id.
+  /users/{user_id}/summary:
+    get:
+      summary: Get a user's completed transaction summary
+      operationId: getUserSummary
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: Summary calculated from persisted transactions.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserSummary'
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /users/{user_id}/transactions:
+    get:
+      summary: List a user's completed transactions
+      operationId: listUserTransactions
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+          description: Inclusive UTC timestamp boundary.
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+          description: Exclusive UTC timestamp boundary; must be later than from.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Page ordered by ascending event timestamp then transaction id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, limit, offset]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PersistedTransaction' }
+                  limit: { type: integer }
+                  offset: { type: integer }
+        '422': { $ref: '#/components/responses/ValidationError' }
+  /metrics:
+    get:
+      summary: Expose operational metrics
+      operationId: getMetrics
+      responses:
+        '200':
+          description: Prometheus text exposition including transaction_processing_failures_total.
+          content:
+            text/plain:
+              schema: { type: string }
+components:
+  parameters:
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+  responses:
+    ValidationError:
+      description: Request fields or query parameters are invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    TransactionInput:
+      type: object
+      additionalProperties: false
+      required: [id, user_id, amount, currency, timestamp]
+      properties:
+        id: { type: string, minLength: 1 }
+        user_id: { type: string, minLength: 1 }
+        amount:
+          type: string
+          pattern: '^-?(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$'
+          description: Decimal string within the documented NUMERIC(24,8) range.
+        currency:
+          type: string
+          pattern: '^[A-Z]{3}$'
+          description: A configured supported currency.
+        timestamp:
+          type: string
+          format: date-time
+          description: ISO 8601 timestamp that includes an offset or Z.
+    PersistedTransaction:
+      type: object
+      required: [id, user_id, original_amount, currency, timestamp, rate, rate_requested_date, rate_date, converted_usd_amount]
+      properties:
+        id: { type: string }
+        user_id: { type: string }
+        original_amount: { type: string }
+        currency: { type: string }
+        timestamp: { type: string, format: date-time, description: UTC event timestamp. }
+        rate: { type: string }
+        rate_requested_date: { type: string, format: date }
+        rate_date: { type: string, format: date }
+        converted_usd_amount: { type: string }
+    UserSummary:
+      type: object
+      required: [user_id, total_usd, transaction_count]
+      properties:
+        user_id: { type: string }
+        total_usd: { type: string, description: Decimal string; zero for no records. }
+        transaction_count: { type: integer, minimum: 0 }
+    Error:
+      type: object
+      required: [detail]
+      properties:
+        detail: { type: string }
