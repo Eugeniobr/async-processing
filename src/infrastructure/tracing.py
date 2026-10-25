@@ -117,10 +117,6 @@ class OpenTelemetryTransactionTracer:
         try:
             with trace.use_span(span, end_on_exit=True):
                 yield _OpenTelemetryTraceSpan(span)
-        except Exception as error:
-            span.record_exception(error)
-            span.set_status(trace.Status(trace.StatusCode.ERROR))
-            raise
         finally:
             _transaction_id.reset(token)
 

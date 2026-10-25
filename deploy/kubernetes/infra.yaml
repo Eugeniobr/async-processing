@@ -1,0 +1,120 @@
+apiVersion: v1
+kind: Service
+metadata: {name: postgres}
+spec:
+  selector: {app: postgres}
+  ports: [{port: 5432}]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: postgres}
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector: {matchLabels: {app: postgres}}
+  template:
+    metadata: {labels: {app: postgres}}
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16.9-alpine
+          env:
+            - {name: POSTGRES_DB, value: async_processing}
+            - {name: POSTGRES_USER, valueFrom: {secretKeyRef: {name: runtime, key: username}}}
+            - {name: POSTGRES_PASSWORD, valueFrom: {secretKeyRef: {name: runtime, key: password}}}
+          ports: [{containerPort: 5432}]
+          readinessProbe:
+            exec: {command: [pg_isready, -U, async_processing, -d, async_processing]}
+            initialDelaySeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 384Mi}
+          volumeMounts: [{name: data, mountPath: /var/lib/postgresql/data}]
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: rabbitmq}
+spec:
+  selector: {app: rabbitmq}
+  ports:
+    - {name: amqp, port: 5672}
+    - {name: management, port: 15672}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata: {name: rabbitmq}
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector: {matchLabels: {app: rabbitmq}}
+  template:
+    metadata: {labels: {app: rabbitmq}}
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:4.3.6-management
+          env:
+            - {name: RABBITMQ_DEFAULT_USER, valueFrom: {secretKeyRef: {name: runtime, key: username}}}
+            - {name: RABBITMQ_DEFAULT_PASS, valueFrom: {secretKeyRef: {name: runtime, key: password}}}
+          ports:
+            - {containerPort: 5672}
+            - {containerPort: 15672}
+          startupProbe:
+            exec: {command: [rabbitmq-diagnostics, -q, ping]}
+            failureThreshold: 60
+            periodSeconds: 5
+            timeoutSeconds: 5
+          readinessProbe:
+            exec: {command: [rabbitmq-diagnostics, -q, ping]}
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/rabbitmq}
+            - {name: definitions, mountPath: /etc/rabbitmq/definitions.json, subPath: definitions.json, readOnly: true}
+            - {name: broker-config, mountPath: /etc/rabbitmq/rabbitmq.conf, subPath: rabbitmq.conf, readOnly: true}
+      volumes:
+        - name: definitions
+          secret: {secretName: rabbitmq-definitions}
+        - name: broker-config
+          configMap: {name: rabbitmq-config}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: {requests: {storage: 1Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: jaeger}
+spec:
+  selector: {app: jaeger}
+  ports:
+    - {name: query, port: 16686}
+    - {name: otlp-http, port: 4318}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: jaeger}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: jaeger}}
+  template:
+    metadata: {labels: {app: jaeger}}
+    spec:
+      containers:
+        - name: jaeger
+          image: jaegertracing/jaeger:2.22.0
+          args: ["--set=receivers.otlp.protocols.http.endpoint=0.0.0.0:4318"]
+          ports: [{containerPort: 16686}, {containerPort: 4318}]
+          readinessProbe: {httpGet: {path: /, port: 16686}}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}

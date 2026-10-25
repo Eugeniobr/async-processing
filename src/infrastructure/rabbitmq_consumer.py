@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from time import monotonic
 from typing import Protocol
 
 from application.transaction_processor import ProcessingOutcome
@@ -15,6 +17,8 @@ from domain.transaction import RetryEnvelope, TransactionEvent
 from infrastructure.tracing import NoopTransactionTracer, TransactionTracer
 
 RETRY_DELAYS_SECONDS = (1, 2, 4, 8, 16, 32, 60)
+
+logger = logging.getLogger(__name__)
 
 
 class Delivery(Protocol):
@@ -58,6 +62,7 @@ class TransactionConsumer:
         after_retry_publish: Callable[[], Awaitable[None]] | None = None,
         recover_unconfirmed: DeliveryRecovery | None = None,
         tracer: TransactionTracer | None = None,
+        concurrency: int = 1,
     ) -> None:
         self._processor = processor
         self._publisher = publisher
@@ -66,10 +71,17 @@ class TransactionConsumer:
         self._after_retry_publish = after_retry_publish
         self._recover_unconfirmed = recover_unconfirmed
         self._tracer = tracer or NoopTransactionTracer()
+        if concurrency < 1:
+            raise ValueError("consumer concurrency must be positive")
+        self._slots = asyncio.Semaphore(concurrency)
 
     async def handle(self, delivery: Delivery) -> None:
         """Handle one manual-ack delivery without requeueing it in-process."""
 
+        async with self._slots:
+            await self._handle(delivery)
+
+    async def _handle(self, delivery: Delivery) -> None:
         try:
             envelope = decode_envelope(delivery.body)
         except asyncio.CancelledError:
@@ -92,6 +104,11 @@ class TransactionConsumer:
             return
 
         parent_context = self._tracer.extract(getattr(delivery, "headers", None))
+        logger.info(
+            "delivery received transaction_id=%s attempt=%s",
+            envelope.event.transaction_id,
+            envelope.attempt,
+        )
         with self._tracer.span(
             "transaction.consume",
             stage="broker_delivery",
@@ -106,7 +123,13 @@ class TransactionConsumer:
                     transaction_id=envelope.event.transaction_id,
                     attempt=envelope.attempt,
                 ) as processing_span:
-                    outcome = self._processor.process(envelope.event)
+                    started = monotonic()
+                    try:
+                        outcome = await asyncio.to_thread(self._processor.process, envelope.event)
+                    finally:
+                        observe = getattr(self._metrics, "record_processing_duration", None)
+                        if observe:
+                            observe(monotonic() - started)
                     processing_span.set_outcome(type(outcome).__name__.lower())
             except asyncio.CancelledError:
                 raise
@@ -125,6 +148,13 @@ class TransactionConsumer:
                     return
                 delivery_span.set_outcome(
                     "processed" if isinstance(outcome, Processed) else "duplicate"
+                )
+                self._record_outcome("processed" if isinstance(outcome, Processed) else "duplicate")
+                logger.info(
+                    "delivery acknowledged transaction_id=%s outcome=%s attempt=%s",
+                    envelope.event.transaction_id,
+                    "processed" if isinstance(outcome, Processed) else "duplicate",
+                    envelope.attempt,
                 )
                 return
             if isinstance(outcome, RetryableFailure):
@@ -149,6 +179,12 @@ class TransactionConsumer:
                     await self._recover(delivery)
                     return
                 delivery_span.set_outcome("retry_forwarded")
+                self._record_outcome("retry_forwarded")
+                logger.info(
+                    "delivery retry forwarded and acknowledged transaction_id=%s attempt=%s",
+                    envelope.event.transaction_id,
+                    retry_envelope.attempt,
+                )
                 return
             if isinstance(outcome, PermanentFailure):
                 try:
@@ -167,6 +203,12 @@ class TransactionConsumer:
                     await self._recover(delivery)
                     return
                 delivery_span.set_outcome("failure_forwarded")
+                self._record_outcome("failure_forwarded")
+                logger.info(
+                    "delivery failure forwarded and acknowledged transaction_id=%s attempt=%s",
+                    envelope.event.transaction_id,
+                    envelope.attempt,
+                )
                 return
 
             await self._recover(delivery)
@@ -190,6 +232,7 @@ class TransactionConsumer:
         process supervisor may restart this bounded-prefetch consumer.
         """
 
+        logger.warning("delivery remains unacknowledged; closing consumer channel for recovery")
         if self._recover_unconfirmed is not None:
             await self._recover_unconfirmed()
             return
@@ -208,6 +251,11 @@ class TransactionConsumer:
 
         if self._metrics is not None:
             self._metrics.record_processing_failure(kind)
+
+    def _record_outcome(self, outcome: str) -> None:
+        observe = getattr(self._metrics, "record_delivery_outcome", None)
+        if observe:
+            observe(outcome)
 
     @staticmethod
     def _retry_delay(attempt: int) -> int:

@@ -1,0 +1,9 @@
+services:
+  test-rates:
+    image: async-processing-test:local
+    command: [tests.scaling.rate_server, "--delay", "0.1"]
+    ports: ["18082:8080"]
+  consumer:
+    environment:
+      FRANKFURTER_BASE_URL: http://test-rates:8080
+      RATE_TIMEOUT_SECONDS: "30"

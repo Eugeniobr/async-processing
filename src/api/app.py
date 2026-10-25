@@ -47,6 +47,11 @@ def create_app(resources: ApplicationResources) -> FastAPI:
             logger.info("application_stopped", extra={"event": "application_stopped"})
 
     app = FastAPI(lifespan=lifespan)
+
+    @app.get("/healthz", include_in_schema=False)
+    def health() -> dict[str, str]:
+        return {"status": "ok"}
+
     register_error_handlers(app)
     register_user_routes(app, resources.repository)
     publisher = getattr(resources, "publisher", None)

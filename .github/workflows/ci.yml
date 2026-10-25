@@ -80,6 +80,7 @@ jobs:
             tests/integration/test_rabbitmq_consumer.py \
             tests/integration/test_rabbitmq_topology.py \
             tests/integration/test_retry_and_failure_routing.py \
+            tests/integration/test_scalable_consumers.py \
             tests/integration/test_transaction_acceptance.py \
             tests/integration/test_user_queries.py \
             tests/recovery

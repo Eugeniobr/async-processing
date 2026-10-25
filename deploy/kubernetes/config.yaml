@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata: {name: application}
+data:
+  METRICS_MODE: instance
+  CONSUMER_CONCURRENCY: "4"
+  CONSUMER_PREFETCH: "8"
+  CONSUMER_SHUTDOWN_SECONDS: "30"
+  DATABASE_POOL_SIZE: "4"
+  DATABASE_STATEMENT_TIMEOUT_MS: "10000"
+  FRANKFURTER_BASE_URL: https://api.frankfurter.dev
+  OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces

@@ -1,6 +1,79 @@
 name: async-processing
 
+x-application: &application
+  image: async-processing:local
+  build:
+    context: .
+    target: runtime
+  init: true
+  stop_grace_period: 45s
+
+x-application-environment: &application-environment
+  DATABASE_URL: postgresql+psycopg://async_processing:async_processing@postgres:5432/async_processing
+  RABBITMQ_URL: amqp://async_processing:async_processing@rabbitmq:5672/
+  FRANKFURTER_BASE_URL: https://api.frankfurter.dev
+  OTLP_TRACES_ENDPOINT: http://jaeger:4318/v1/traces
+  METRICS_MODE: instance
+  CONSUMER_CONCURRENCY: ${CONSUMER_CONCURRENCY:-4}
+  CONSUMER_PREFETCH: ${CONSUMER_PREFETCH:-8}
+  CONSUMER_SHUTDOWN_SECONDS: ${CONSUMER_SHUTDOWN_SECONDS:-30}
+  DATABASE_POOL_SIZE: 4
+  DATABASE_STATEMENT_TIMEOUT_MS: 10000
+
 services:
+  migrate:
+    <<: *application
+    command: ["composition.migrate_main"]
+    environment: *application-environment
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  api:
+    <<: *application
+    command: ["composition.api_main"]
+    environment:
+      <<: *application-environment
+      DATABASE_POOL_SIZE: 2
+    ports:
+      - "${API_PORT:-8000}:8000"
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 256m
+
+  consumer:
+    <<: *application
+    command: ["composition.consumer_main"]
+    environment: *application-environment
+    expose:
+      - "8001"
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      rabbitmq:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/readyz', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    mem_limit: 256m
+
   postgres:
     image: postgres:16.9-alpine
     environment:
@@ -8,7 +81,7 @@ services:
       POSTGRES_USER: async_processing
       POSTGRES_PASSWORD: async_processing
     ports:
-      - "5433:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -24,8 +97,8 @@ services:
       RABBITMQ_DEFAULT_USER: async_processing
       RABBITMQ_DEFAULT_PASS: async_processing
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - "${AMQP_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
       - ./docker/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
@@ -42,9 +115,9 @@ services:
       - "--set=receivers.otlp.protocols.grpc.endpoint=0.0.0.0:4317"
       - "--set=receivers.otlp.protocols.http.endpoint=0.0.0.0:4318"
     ports:
-      - "16686:16686"
-      - "4317:4317"
-      - "4318:4318"
+      - "${JAEGER_UI_PORT:-16686}:16686"
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:16686/ >/dev/null"]
       interval: 5s

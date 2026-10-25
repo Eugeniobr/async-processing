@@ -1,0 +1,28 @@
+# Explicit test overlay only: no production slow-mode variable exists.
+apiVersion: v1
+kind: Service
+metadata: {name: test-rates}
+spec:
+  selector: {app: test-rates}
+  ports: [{port: 8080}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: test-rates}
+spec:
+  replicas: 1
+  selector: {matchLabels: {app: test-rates}}
+  template:
+    metadata: {labels: {app: test-rates}}
+    spec:
+      securityContext: {runAsNonRoot: true, runAsUser: 10001}
+      containers:
+        - name: provider
+          image: async-processing-test:local
+          imagePullPolicy: Never
+          args: [tests.scaling.rate_server, "--delay", "0.25"]
+          ports: [{containerPort: 8080}]
+          readinessProbe: {httpGet: {path: /healthz, port: 8080}}
+          resources:
+            requests: {cpu: 50m, memory: 32Mi}
+            limits: {cpu: 500m, memory: 128Mi}

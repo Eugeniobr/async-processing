@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import Field, HttpUrl, ValidationError, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     consumer_prefetch: int = Field(default=100, ge=1)
     rate_fallback_days: int = Field(default=7, ge=0, le=7)
     otlp_traces_endpoint: str | None = None
+    metrics_mode: Literal["multiprocess", "instance"] = "multiprocess"
+    consumer_concurrency: int = Field(default=4, ge=1, le=64)
+    consumer_shutdown_seconds: float = Field(default=30, gt=0, le=300)
+    consumer_metrics_port: int = Field(default=8001, ge=1, le=65535)
+    database_pool_size: int = Field(default=4, ge=1, le=64)
+    database_pool_timeout: float = Field(default=5, gt=0)
+    database_statement_timeout_ms: int = Field(default=10000, ge=1)
+    rate_timeout_seconds: float = Field(default=5, gt=0, le=60)
 
     @field_validator("app_env")
     @classmethod

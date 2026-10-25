@@ -15,6 +15,12 @@ build/
 .env.*
 !.env.example
 .runtime/
+*.secret.yaml
+secrets/
+.kube/
+kubeconfig*
+*.key
+*.crt
 .load-evidence/
 .DS_Store
 Thumbs.db

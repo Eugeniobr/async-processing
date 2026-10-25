@@ -1,0 +1,36 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata: {name: rabbitmq-scaler}
+spec:
+  secretTargetRef:
+    - {parameter: host, name: runtime, key: RABBITMQ_MANAGEMENT_HOST}
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata: {name: consumer}
+spec:
+  scaleTargetRef: {name: consumer}
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  pollingInterval: 5
+  cooldownPeriod: 60
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 0
+        scaleDown:
+          stabilizationWindowSeconds: 60
+          policies: [{type: Pods, value: 1, periodSeconds: 15}]
+  triggers:
+    - type: rabbitmq
+      useCachedMetrics: true
+      metadata:
+        protocol: http
+        queueName: transactions.work
+        vhostName: "/"
+        mode: QueueLength
+        value: "20"
+        excludeUnacknowledged: "false"
+        timeout: "3000"
+      authenticationRef: {name: rabbitmq-scaler}

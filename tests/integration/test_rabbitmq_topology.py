@@ -8,7 +8,7 @@ import time
 import uuid
 from datetime import UTC, datetime
 from decimal import Decimal
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import aio_pika
 import httpx
@@ -191,7 +191,8 @@ def test_real_broker_validates_topology_confirms_and_routes_every_retry_bucket()
             ).validate()
 
         _configure_vhost(client, vhost)
-        vhost_url = f"amqp://{USERNAME}:{PASSWORD}@localhost:5672/{encoded}"
+        parsed = urlsplit(RABBITMQ_URL)
+        vhost_url = urlunsplit(parsed._replace(path=f"/{encoded}"))
         asyncio.run(_declare_topology(vhost_url))
         asyncio.run(_verify_publisher_and_retry_routing(vhost_url))
     finally:

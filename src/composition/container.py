@@ -85,7 +85,13 @@ def build_api_container(settings: Settings) -> ApplicationContainer:
     """Build the HTTP process with the registry that aggregates consumer observations."""
 
     return _build_container(
-        settings, MetricsRecorder.for_scrape(), trace_service_name="async-processing-api"
+        settings,
+        (
+            MetricsRecorder.for_scrape()
+            if settings.metrics_mode == "multiprocess"
+            else MetricsRecorder(registry=CollectorRegistry())
+        ),
+        trace_service_name="async-processing-api",
     )
 
 
@@ -114,13 +120,29 @@ def _build_container(
     """Build shared dependencies while the caller explicitly chooses metric lifecycle."""
 
     tracer = build_local_tracer(settings.otlp_traces_endpoint, service_name=trace_service_name)
-    rate_client = httpx.Client()
-    database_engine = create_engine(settings.database_url)
+    rate_client = httpx.Client(
+        limits=httpx.Limits(
+            max_connections=settings.consumer_concurrency,
+            max_keepalive_connections=settings.consumer_concurrency,
+        )
+    )
+    database_engine = create_engine(
+        settings.database_url,
+        pool_size=settings.database_pool_size,
+        max_overflow=0,
+        pool_timeout=settings.database_pool_timeout,
+        pool_pre_ping=True,
+        connect_args={
+            "connect_timeout": 5,
+            "options": f"-c statement_timeout={settings.database_statement_timeout_ms}",
+        },
+    )
     try:
         currency_allowlist = load_currency_allowlist(settings.currency_allowlist_path)
         provider = FrankfurterEcbRateProvider(
             rate_client,
             base_url=str(settings.frankfurter_base_url),
+            timeout_seconds=settings.rate_timeout_seconds,
             tracer=tracer,
         )
         repository = PostgresTransactionRepository(database_engine, tracer=tracer)

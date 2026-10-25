@@ -1,0 +1,8 @@
+spec:
+  template:
+    spec:
+      containers:
+        - name: consumer
+          env:
+            - name: FRANKFURTER_BASE_URL
+              value: http://test-rates:8080

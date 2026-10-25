@@ -5,7 +5,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from prometheus_client import REGISTRY, CollectorRegistry, Counter, generate_latest, multiprocess
+from prometheus_client import (
+    REGISTRY,
+    CollectorRegistry,
+    Counter,
+    Histogram,
+    generate_latest,
+    multiprocess,
+)
 
 MULTIPROC_DIRECTORY_ENV = "PROMETHEUS_MULTIPROC_DIR"
 
@@ -27,6 +34,33 @@ class MetricsRecorder:
             if register_counter
             else None
         )
+        self._deliveries = (
+            Counter(
+                "transaction_deliveries",
+                "Completed delivery outcomes.",
+                ("outcome",),
+                registry=registry,
+            )
+            if register_counter
+            else None
+        )
+        self._duration = (
+            Histogram(
+                "transaction_processing_seconds", "Processor attempt duration.", registry=registry
+            )
+            if register_counter
+            else None
+        )
+
+    def record_delivery_outcome(self, outcome: str) -> None:
+        if outcome not in {"processed", "duplicate", "retry_forwarded", "failure_forwarded"}:
+            raise ValueError("unknown delivery outcome")
+        if self._deliveries is not None:
+            self._deliveries.labels(outcome=outcome).inc()
+
+    def record_processing_duration(self, seconds: float) -> None:
+        if self._duration is not None:
+            self._duration.observe(seconds)
 
     @classmethod
     def for_scrape(cls) -> MetricsRecorder:
